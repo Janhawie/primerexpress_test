@@ -1,0 +1,380 @@
+#!/bin/bash
+# Fix the unclosed for loop in results.html
+
+# Create a backup of the current file
+if [ -f "templates/results.html" ]; then
+    cp templates/results.html templates/results.html.bak
+    echo "Created backup of results.html"
+    
+    # Use the artifact content from our earlier update to replace the file
+    cat > templates/results.html << 'EOL'
+{% extends "base.html" %}
+
+{% block title %}Primer Design Results{% endblock %}
+
+{% block head_scripts %}
+<script src="https://cdn.jsdelivr.net/npm/clipboard@2.0.8/dist/clipboard.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<section class="results">
+    <h2><i class="fas fa-flask"></i> Primer Design Results</h2>
+    
+    <div class="results-summary">
+        <div class="summary-card">
+            <i class="fas fa-dna"></i>
+            <div class="summary-info">
+                <span class="summary-label">Sequences</span>
+                <span class="summary-value">{{ all_results|length }}</span>
+            </div>
+        </div>
+        
+        <div class="summary-card">
+            <i class="fas fa-microscope"></i>
+            <div class="summary-info">
+                <span class="summary-label">Total Primer Pairs</span>
+                <span class="summary-value">
+                    {% set total_pairs = 0 %}
+                    {% for seq_id, result_data in all_results.items() %}
+                        {% set total_pairs = total_pairs + result_data.results|length %}
+                    {% endfor %}
+                    {{ total_pairs }}
+                </span>
+            </div>
+        </div>
+        
+        {% if include_probe %}
+        <div class="summary-card">
+            <i class="fas fa-search"></i>
+            <div class="summary-info">
+                <span class="summary-label">Probes Included</span>
+                <span class="summary-value">Yes</span>
+            </div>
+        </div>
+        {% endif %}
+        
+        <div class="summary-card">
+            <i class="fas fa-download"></i>
+            <div class="summary-info">
+                <span class="summary-label">Download All</span>
+                <div class="dropdown">
+                    <button class="dropdown-btn btn-download">Download <i class="fas fa-caret-down"></i></button>
+                    <div class="dropdown-content">
+                        {% for seq_id in all_results.keys() %}
+                        <a href="{{ url_for('download', sequence_id=seq_id, temp_files=temp_files) }}">
+                            <i class="fas fa-file-csv"></i> {{ seq_id }}
+                        </a>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="results-nav">
+        <ul class="sequence-tabs">
+            {% for seq_id in all_results.keys() %}
+            <li class="sequence-tab" onclick="showSequence('{{ seq_id }}')">
+                <i class="fas fa-dna"></i> {{ seq_id }}
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    
+    {% for seq_id, result_data in all_results.items() %}
+    <div id="sequence_{{ seq_id }}" class="sequence-results" style="display: {% if loop.first %}block{% else %}none{% endif %};">
+        <div class="sequence-header">
+            <h3>{{ seq_id }}</h3>
+            <div class="sequence-actions">
+                <a href="{{ url_for('download', sequence_id=seq_id, temp_files=temp_files) }}" class="btn-download">
+                    <i class="fas fa-file-csv"></i> Download CSV
+                </a>
+            </div>
+        </div>
+        
+        <div class="sequence-info">
+            <h4><i class="fas fa-dna"></i> Target Sequence</h4>
+            <div class="sequence-display">
+                <div class="sequence-content">{{ result_data.sequence[:50] }}...</div>
+                <span class="sequence-length">({{ result_data.sequence|length }} bp)</span>
+                <button class="btn-action sequence-view-btn" onclick="toggleFullSequence('{{ seq_id }}')">
+                    <i class="fas fa-eye"></i> View Full
+                </button>
+            </div>
+            <div id="full_sequence_{{ seq_id }}" class="full-sequence" style="display: none;">
+                <div class="sequence-content-full">{{ result_data.sequence }}</div>
+                <div class="sequence-actions">
+                    <button class="btn-action copy-btn" data-clipboard-target="#full_sequence_{{ seq_id }} .sequence-content-full">
+                        <i class="fas fa-copy"></i> Copy
+                    </button>
+                    <button class="btn-action" onclick="toggleFullSequence('{{ seq_id }}')">
+                        <i class="fas fa-times"></i> Close
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <div class="primers-table-container">
+            <h4><i class="fas fa-microscope"></i> Designed Primer Pairs {% if include_probe %}and Probes{% endif %}</h4>
+            
+            {% if result_data.results %}
+            <div class="table-actions">
+                <button class="btn-action btn-filter" onclick="toggleFilters('{{ seq_id }}')">
+                    <i class="fas fa-filter"></i> Filter Results
+                </button>
+                <div id="filters_{{ seq_id }}" class="filters-panel" style="display: none;">
+                    <div class="filter-group">
+                        <label for="min_tm_filter_{{ seq_id }}">Min. Tm (°C):</label>
+                        <input type="number" id="min_tm_filter_{{ seq_id }}" value="55" min="45" max="75" step="0.1">
+                    </div>
+                    <div class="filter-group">
+                        <label for="max_gc_filter_{{ seq_id }}">Max. GC (%):</label>
+                        <input type="number" id="max_gc_filter_{{ seq_id }}" value="70" min="40" max="80" step="0.1">
+                    </div>
+                    <div class="filter-group">
+                        <label for="max_size_filter_{{ seq_id }}">Max. Size (bp):</label>
+                        <input type="number" id="max_size_filter_{{ seq_id }}" value="800" min="100" max="3000">
+                    </div>
+                    <button class="btn-action" onclick="applyFilters('{{ seq_id }}')">
+                        <i class="fas fa-check"></i> Apply
+                    </button>
+                    <button class="btn-action" onclick="resetFilters('{{ seq_id }}')">
+                        <i class="fas fa-undo"></i> Reset
+                    </button>
+                </div>
+            </div>
+            
+            <table class="primers-table" id="primers_table_{{ seq_id }}">
+                <thead>
+                    <tr>
+                        <th>Pair</th>
+                        <th>Product Size</th>
+                        <th>Forward Primer</th>
+                        <th>Reverse Primer</th>
+                        {% if include_probe %}
+                        <th>Probe</th>
+                        {% endif %}
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for pair in result_data.results %}
+                    <tr class="primer-row" data-tm-f="{{ pair.forward_primer.tm }}" data-tm-r="{{ pair.reverse_primer.tm }}" 
+                        data-gc-f="{{ pair.forward_primer.gc_percent }}" data-gc-r="{{ pair.reverse_primer.gc_percent }}" 
+                        data-size="{{ pair.product_size }}">
+                        <td>{{ pair.pair_id }}</td>
+                        <td>{{ pair.product_size }} bp</td>
+                        <td class="primer-cell">
+                            <div class="primer-sequence" id="fwd_{{ seq_id }}_{{ pair.pair_id }}">{{ pair.forward_primer.sequence }}</div>
+                            <div class="primer-stats">
+                                <span>{{ pair.forward_primer.length }} bp</span>
+                                <span>{{ "%.1f"|format(pair.forward_primer.tm) }}°C</span>
+                                <span>{{ "%.1f"|format(pair.forward_primer.gc_percent) }}% GC</span>
+                                <button class="copy-btn" data-clipboard-target="#fwd_{{ seq_id }}_{{ pair.pair_id }}">
+                                    <i class="fas fa-copy"></i>
+                                </button>
+                            </div>
+                        </td>
+                        <td class="primer-cell">
+                            <div class="primer-sequence" id="rev_{{ seq_id }}_{{ pair.pair_id }}">{{ pair.reverse_primer.sequence }}</div>
+                            <div class="primer-stats">
+                                <span>{{ pair.reverse_primer.length }} bp</span>
+                                <span>{{ "%.1f"|format(pair.reverse_primer.tm) }}°C</span>
+                                <span>{{ "%.1f"|format(pair.reverse_primer.gc_percent) }}% GC</span>
+                                <button class="copy-btn" data-clipboard-target="#rev_{{ seq_id }}_{{ pair.pair_id }}">
+                                    <i class="fas fa-copy"></i>
+                                </button>
+                            </div>
+                        </td>
+                        {% if include_probe and pair.probe %}
+                        <td class="primer-cell">
+                            <div class="primer-sequence" id="probe_{{ seq_id }}_{{ pair.pair_id }}">{{ pair.probe.sequence }}</div>
+                            <div class="primer-stats">
+                                <span>{{ pair.probe.length }} bp</span>
+                                <span>{{ "%.1f"|format(pair.probe.tm) }}°C</span>
+                                <span>{{ "%.1f"|format(pair.probe.gc_percent) }}% GC</span>
+                                <button class="copy-btn" data-clipboard-target="#probe_{{ seq_id }}_{{ pair.pair_id }}">
+                                    <i class="fas fa-copy"></i>
+                                </button>
+                            </div>
+                        </td>
+                        {% elif include_probe %}
+                        <td class="primer-cell">
+                            <div class="primer-sequence">No probe found</div>
+                        </td>
+                        {% endif %}
+                        <td>
+                            <button class="btn-details" onclick="toggleDetails('{{ seq_id }}_{{ pair.pair_id }}')">
+                                <i class="fas fa-info-circle"></i> Details
+                            </button>
+                            <div id="details_{{ seq_id }}_{{ pair.pair_id }}" class="primer-details" style="display: none;">
+                                <div class="details-header">
+                                    <h5>Primer Pair {{ pair.pair_id }} Details</h5>
+                                    <button class="close-details" onclick="toggleDetails('{{ seq_id }}_{{ pair.pair_id }}')">
+                                        <i class="fas fa-times"></i>
+                                    </button>
+                                </div>
+                                
+                                <div class="details-content">
+                                    <div class="detail-section">
+                                        <h5>Forward Primer</h5>
+                                        <p>Position: {{ pair.forward_primer.position }}</p>
+                                        <p>Length: {{ pair.forward_primer.length }} bp</p>
+                                        <p>Tm: {{ "%.2f"|format(pair.forward_primer.tm) }}°C</p>
+                                        <p>GC Content: {{ "%.2f"|format(pair.forward_primer.gc_percent) }}%</p>
+                                    </div>
+                                    
+                                    <div class="detail-section">
+                                        <h5>Reverse Primer</h5>
+                                        <p>Position: {{ pair.reverse_primer.position }}</p>
+                                        <p>Length: {{ pair.reverse_primer.length }} bp</p>
+                                        <p>Tm: {{ "%.2f"|format(pair.reverse_primer.tm) }}°C</p>
+                                        <p>GC Content: {{ "%.2f"|format(pair.reverse_primer.gc_percent) }}%</p>
+                                    </div>
+                                    
+                                    {% if include_probe and pair.probe %}
+                                    <div class="detail-section">
+                                        <h5>Probe</h5>
+                                        <p>Position: {{ pair.probe.position }}</p>
+                                        <p>Length: {{ pair.probe.length }} bp</p>
+                                        <p>Tm: {{ "%.2f"|format(pair.probe.tm) }}°C</p>
+                                        <p>GC Content: {{ "%.2f"|format(pair.probe.gc_percent) }}%</p>
+                                    </div>
+                                    {% endif %}
+                                    
+                                    <div class="detail-section">
+                                        <h5>Product</h5>
+                                        <p>Size: {{ pair.product_size }} bp</p>
+                                        <p>Penalty: {{ "%.2f"|format(pair.pair_penalty) }}</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p class="no-results">No primers could be designed for this sequence with the given parameters.</p>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+    
+    <div class="navigation-buttons">
+        <a href="{{ url_for('index') }}" class="btn-secondary">
+            <i class="fas fa-arrow-left"></i> Back to Design Form
+        </a>
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Initialize clipboard.js for copy buttons
+    document.addEventListener('DOMContentLoaded', function() {
+        // Activate the first tab by default
+        const firstTab = document.querySelector('.sequence-tab');
+        if (firstTab) {
+            firstTab.classList.add('active');
+        }
+        
+        // Initialize clipboard.js
+        var clipboard = new ClipboardJS('.copy-btn');
+        clipboard.on('success', function(e) {
+            const originalText = e.trigger.innerHTML;
+            e.trigger.innerHTML = '<i class="fas fa-check"></i> Copied!';
+            setTimeout(function() {
+                e.trigger.innerHTML = originalText;
+            }, 1500);
+            e.clearSelection();
+        });
+    });
+    
+    function showSequence(seqId) {
+        // Hide all sequence results
+        const allResults = document.querySelectorAll('.sequence-results');
+        allResults.forEach(element => {
+            element.style.display = 'none';
+        });
+        
+        // Show the selected sequence
+        document.getElementById('sequence_' + seqId).style.display = 'block';
+        
+        // Highlight the selected tab
+        const allTabs = document.querySelectorAll('.sequence-tab');
+        allTabs.forEach(tab => {
+            tab.classList.remove('active');
+        });
+        
+        event.target.closest('.sequence-tab').classList.add('active');
+    }
+    
+    function toggleDetails(pairId) {
+        const detailsElement = document.getElementById('details_' + pairId);
+        if (detailsElement.style.display === 'none') {
+            detailsElement.style.display = 'block';
+        } else {
+            detailsElement.style.display = 'none';
+        }
+    }
+    
+    function toggleFullSequence(seqId) {
+        const fullSeqElement = document.getElementById('full_sequence_' + seqId);
+        if (fullSeqElement.style.display === 'none') {
+            fullSeqElement.style.display = 'block';
+        } else {
+            fullSeqElement.style.display = 'none';
+        }
+    }
+    
+    function toggleFilters(seqId) {
+        const filtersPanel = document.getElementById('filters_' + seqId);
+        if (filtersPanel.style.display === 'none') {
+            filtersPanel.style.display = 'flex';
+        } else {
+            filtersPanel.style.display = 'none';
+        }
+    }
+    
+    function applyFilters(seqId) {
+        const minTm = parseFloat(document.getElementById('min_tm_filter_' + seqId).value);
+        const maxGc = parseFloat(document.getElementById('max_gc_filter_' + seqId).value);
+        const maxSize = parseInt(document.getElementById('max_size_filter_' + seqId).value);
+        
+        const rows = document.querySelectorAll('#primers_table_' + seqId + ' tbody tr.primer-row');
+        
+        rows.forEach(row => {
+            const fwdTm = parseFloat(row.dataset.tmF);
+            const revTm = parseFloat(row.dataset.tmR);
+            const fwdGc = parseFloat(row.dataset.gcF);
+            const revGc = parseFloat(row.dataset.gcR);
+            const size = parseInt(row.dataset.size);
+            
+            if (fwdTm < minTm || revTm < minTm || fwdGc > maxGc || revGc > maxGc || size > maxSize) {
+                row.style.display = 'none';
+            } else {
+                row.style.display = '';
+            }
+        });
+    }
+    
+    function resetFilters(seqId) {
+        document.getElementById('min_tm_filter_' + seqId).value = 55;
+        document.getElementById('max_gc_filter_' + seqId).value = 70;
+        document.getElementById('max_size_filter_' + seqId).value = 800;
+        
+        const rows = document.querySelectorAll('#primers_table_' + seqId + ' tbody tr.primer-row');
+        rows.forEach(row => {
+            row.style.display = '';
+        });
+    }
+</script>
+{% endblock %}
+EOL
+
+    echo "Fixed unclosed for loop in results.html"
+else
+    echo "Error: templates/results.html not found!"
+    echo "Please ensure your template files are in the correct location."
+fi

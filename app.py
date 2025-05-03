@@ -42,9 +42,12 @@ def design_primers(sequence, params):
     """Design primers using primer3-py with the provided parameters"""
     try:
         # Prepare primer3 parameters
-        primer3_params = {
+        seq_args = {
             'SEQUENCE_ID': 'target_sequence',
             'SEQUENCE_TEMPLATE': sequence,
+        }
+        
+        global_args = {
             'PRIMER_OPT_SIZE': int(params.get('primer_opt_size', 20)),
             'PRIMER_MIN_SIZE': int(params.get('primer_min_size', 18)),
             'PRIMER_MAX_SIZE': int(params.get('primer_max_size', 27)),
@@ -60,7 +63,7 @@ def design_primers(sequence, params):
         
         # Add internal oligo (probe) parameters if requested
         if params.get('include_probe', False):
-            primer3_params.update({
+            global_args.update({
                 'PRIMER_PICK_INTERNAL_OLIGO': 1,
                 'PRIMER_INTERNAL_OPT_SIZE': int(params.get('probe_opt_size', 20)),
                 'PRIMER_INTERNAL_MIN_SIZE': int(params.get('probe_min_size', 18)),
@@ -72,12 +75,14 @@ def design_primers(sequence, params):
                 'PRIMER_INTERNAL_MAX_GC': float(params.get('probe_max_gc', 80.0)),
             })
         
-        # Run primer3 design
-        primer_results = primer3.bindings.designPrimers(primer3_params)
+        # Using the updated function name (design_primers instead of designPrimers)
+        primer_results = primer3.bindings.design_primers(seq_args, global_args)
         return primer_results
     
     except Exception as e:
         print(f"Error in primer design: {e}")
+        import traceback
+        traceback.print_exc()  # Print full traceback for debugging
         return None
 
 def process_primer_results(primer_results, include_probe=False):
@@ -85,43 +90,67 @@ def process_primer_results(primer_results, include_probe=False):
     processed_results = []
     
     if not primer_results:
+        print("No primer results to process")
         return processed_results
     
+    # Debug the structure of primer_results
+    print(f"Keys in primer_results: {list(primer_results.keys())}")
+    
+    # Check if the format is as expected
     num_primer_pairs = primer_results.get('PRIMER_PAIR_NUM_RETURNED', 0)
+    if num_primer_pairs == 0:
+        print("No primer pairs returned")
+        return processed_results
+    
+    print(f"Processing {num_primer_pairs} primer pairs")
     
     for i in range(num_primer_pairs):
-        pair = {
-            'pair_id': i + 1,
-            'forward_primer': {
-                'sequence': primer_results.get(f'PRIMER_LEFT_{i}_SEQUENCE'),
-                'position': primer_results.get(f'PRIMER_LEFT_{i}')[0] + 1,  # 1-based position
-                'length': primer_results.get(f'PRIMER_LEFT_{i}')[1],
-                'tm': primer_results.get(f'PRIMER_LEFT_{i}_TM'),
-                'gc_percent': primer_results.get(f'PRIMER_LEFT_{i}_GC_PERCENT')
-            },
-            'reverse_primer': {
-                'sequence': primer_results.get(f'PRIMER_RIGHT_{i}_SEQUENCE'),
-                'position': primer_results.get(f'PRIMER_RIGHT_{i}')[0] + 1,  # 1-based position
-                'length': primer_results.get(f'PRIMER_RIGHT_{i}')[1],
-                'tm': primer_results.get(f'PRIMER_RIGHT_{i}_TM'),
-                'gc_percent': primer_results.get(f'PRIMER_RIGHT_{i}_GC_PERCENT')
-            },
-            'product_size': primer_results.get(f'PRIMER_PAIR_{i}_PRODUCT_SIZE'),
-            'pair_penalty': primer_results.get(f'PRIMER_PAIR_{i}_PENALTY')
-        }
-        
-        # Add probe information if available
-        if include_probe and f'PRIMER_INTERNAL_{i}_SEQUENCE' in primer_results:
-            pair['probe'] = {
-                'sequence': primer_results.get(f'PRIMER_INTERNAL_{i}_SEQUENCE'),
-                'position': primer_results.get(f'PRIMER_INTERNAL_{i}')[0] + 1,  # 1-based position
-                'length': primer_results.get(f'PRIMER_INTERNAL_{i}')[1],
-                'tm': primer_results.get(f'PRIMER_INTERNAL_{i}_TM'),
-                'gc_percent': primer_results.get(f'PRIMER_INTERNAL_{i}_GC_PERCENT')
+        try:
+            # Check if we have the expected keys
+            left_seq_key = f'PRIMER_LEFT_{i}_SEQUENCE'
+            right_seq_key = f'PRIMER_RIGHT_{i}_SEQUENCE'
+            
+            if left_seq_key not in primer_results or right_seq_key not in primer_results:
+                print(f"Missing primer sequence keys for pair {i}")
+                continue
+            
+            # Get primer pair data
+            pair = {
+                'pair_id': i + 1,
+                'forward_primer': {
+                    'sequence': primer_results.get(f'PRIMER_LEFT_{i}_SEQUENCE', ''),
+                    'position': primer_results.get(f'PRIMER_LEFT_{i}', [0, 0])[0] + 1,  # 1-based position
+                    'length': primer_results.get(f'PRIMER_LEFT_{i}', [0, 0])[1],
+                    'tm': primer_results.get(f'PRIMER_LEFT_{i}_TM', 0.0),
+                    'gc_percent': primer_results.get(f'PRIMER_LEFT_{i}_GC_PERCENT', 0.0)
+                },
+                'reverse_primer': {
+                    'sequence': primer_results.get(f'PRIMER_RIGHT_{i}_SEQUENCE', ''),
+                    'position': primer_results.get(f'PRIMER_RIGHT_{i}', [0, 0])[0] + 1,  # 1-based position
+                    'length': primer_results.get(f'PRIMER_RIGHT_{i}', [0, 0])[1],
+                    'tm': primer_results.get(f'PRIMER_RIGHT_{i}_TM', 0.0),
+                    'gc_percent': primer_results.get(f'PRIMER_RIGHT_{i}_GC_PERCENT', 0.0)
+                },
+                'product_size': primer_results.get(f'PRIMER_PAIR_{i}_PRODUCT_SIZE', 0),
+                'pair_penalty': primer_results.get(f'PRIMER_PAIR_{i}_PENALTY', 0.0)
             }
-        
-        processed_results.append(pair)
+            
+            # Add probe information if available
+            if include_probe and f'PRIMER_INTERNAL_{i}_SEQUENCE' in primer_results:
+                pair['probe'] = {
+                    'sequence': primer_results.get(f'PRIMER_INTERNAL_{i}_SEQUENCE', ''),
+                    'position': primer_results.get(f'PRIMER_INTERNAL_{i}', [0, 0])[0] + 1,  # 1-based position
+                    'length': primer_results.get(f'PRIMER_INTERNAL_{i}', [0, 0])[1],
+                    'tm': primer_results.get(f'PRIMER_INTERNAL_{i}_TM', 0.0),
+                    'gc_percent': primer_results.get(f'PRIMER_INTERNAL_{i}_GC_PERCENT', 0.0)
+                }
+            
+            processed_results.append(pair)
+        except Exception as e:
+            print(f"Error processing primer pair {i}: {e}")
+            continue
     
+    print(f"Returning {len(processed_results)} processed primer pairs")
     return processed_results
 
 def generate_csv(results, sequence_id, include_probe=False):
@@ -175,8 +204,11 @@ GGAAATACAGCTTGCTCACTTCGTTACTTCAGGCCCCTCAAATCTGTGGGAGCCACACCTGATGACAC
 @app.route('/design', methods=['POST'])
 def design():
     try:
+        print("=== Starting primer design process ===")
+        
         # Get sequence input method
         sequence_input_method = request.form.get('sequence_input_method')
+        print(f"Input method: {sequence_input_method}")
         
         # Get sequence data based on input method
         sequences = {}
@@ -187,12 +219,15 @@ def design():
                 flash('No sequence provided!', 'error')
                 return redirect(url_for('index'))
             
+            print(f"Received sequence text of length: {len(fasta_content)}")
+            
             # Check if input is in FASTA format
             if not fasta_content.startswith('>'):
                 # Try to convert plain sequence to FASTA
                 sequence = re.sub(r'[^ATGCN]', '', fasta_content.upper())
                 if sequence:
                     fasta_content = f">Sequence\n{sequence}"
+                    print("Converted plain sequence to FASTA format")
                 else:
                     flash('Invalid sequence format!', 'error')
                     return redirect(url_for('index'))
@@ -233,6 +268,8 @@ def design():
             flash('No valid sequences found in the input!', 'error')
             return redirect(url_for('index'))
         
+        print(f"Parsed {len(sequences)} sequences: {list(sequences.keys())}")
+        
         # Get primer design parameters
         params = {
             'primer_opt_size': request.form.get('primer_opt_size', 20),
@@ -247,15 +284,9 @@ def design():
             'product_max_size': request.form.get('product_max_size', 1000),
             'num_primer_pairs': request.form.get('num_primer_pairs', 5),
             'include_probe': 'include_probe' in request.form,
-            'probe_opt_size': request.form.get('probe_opt_size', 20),
-            'probe_min_size': request.form.get('probe_min_size', 18),
-            'probe_max_size': request.form.get('probe_max_size', 27),
-            'probe_opt_tm': request.form.get('probe_opt_tm', 65.0),
-            'probe_min_tm': request.form.get('probe_min_tm', 62.0),
-            'probe_max_tm': request.form.get('probe_max_tm', 68.0),
-            'probe_min_gc': request.form.get('probe_min_gc', 20.0),
-            'probe_max_gc': request.form.get('probe_max_gc', 80.0),
         }
+        
+        print(f"Design parameters: {params}")
         
         # Check if parameters are valid
         for key in params:
@@ -269,17 +300,46 @@ def design():
                     flash(f'Invalid value for parameter: {key}', 'error')
                     return redirect(url_for('index'))
         
+        # Add probe parameters if needed
+        if params['include_probe']:
+            params.update({
+                'probe_opt_size': request.form.get('probe_opt_size', 20),
+                'probe_min_size': request.form.get('probe_min_size', 18),
+                'probe_max_size': request.form.get('probe_max_size', 27),
+                'probe_opt_tm': request.form.get('probe_opt_tm', 65.0),
+                'probe_min_tm': request.form.get('probe_min_tm', 62.0),
+                'probe_max_tm': request.form.get('probe_max_tm', 68.0),
+                'probe_min_gc': request.form.get('probe_min_gc', 20.0),
+                'probe_max_gc': request.form.get('probe_max_gc', 80.0),
+            })
+            
+            # Convert probe parameters to proper types
+            for key in params:
+                if key.startswith('probe_') and key.endswith(('_size', '_tm', '_gc')):
+                    try:
+                        if key.endswith('_size'):
+                            params[key] = int(params[key])
+                        else:
+                            params[key] = float(params[key])
+                    except ValueError:
+                        flash(f'Invalid value for parameter: {key}', 'error')
+                        return redirect(url_for('index'))
+        
         # Process each sequence
         all_results = {}
         for seq_id, sequence in sequences.items():
+            print(f"Designing primers for sequence: {seq_id} (length: {len(sequence)})")
             primer_results = design_primers(sequence, params)
             if primer_results:
+                print(f"Successfully designed primers for {seq_id}")
                 processed_results = process_primer_results(primer_results, params['include_probe'])
                 all_results[seq_id] = {
                     'sequence': sequence,
                     'results': processed_results
                 }
+                print(f"Found {len(processed_results)} primer pairs for {seq_id}")
             else:
+                print(f"Failed to design primers for {seq_id}")
                 flash(f'Failed to design primers for sequence: {seq_id}', 'warning')
         
         if not all_results:
@@ -296,12 +356,16 @@ def design():
                 f.write(csv_content)
             temp_files[seq_id] = temp_file.name
         
+        print("Rendering results template")
         return render_template('results.html', 
                                all_results=all_results, 
                                temp_files=temp_files,
                                include_probe=params['include_probe'])
         
     except Exception as e:
+        print(f"Critical error in design route: {str(e)}")
+        import traceback
+        traceback.print_exc()
         flash(f'An error occurred: {str(e)}', 'error')
         return redirect(url_for('index'))
 
@@ -309,6 +373,7 @@ def design():
 def api_design():
     """API endpoint for primer design (for AJAX requests)"""
     try:
+        print("=== Starting API primer design ===")
         data = request.get_json()
         
         # Extract sequence
@@ -316,12 +381,15 @@ def api_design():
         if not fasta_content:
             return {"error": "No sequence provided"}, 400
         
+        print(f"Received sequence of length {len(fasta_content)}")
+        
         # Check if input is in FASTA format
         if not fasta_content.startswith('>'):
             # Try to convert plain sequence to FASTA
             sequence = re.sub(r'[^ATGCN]', '', fasta_content.upper())
             if sequence:
                 fasta_content = f">Sequence\n{sequence}"
+                print("Converted plain sequence to FASTA format")
             else:
                 return {"error": "Invalid sequence format"}, 400
         
@@ -329,6 +397,8 @@ def api_design():
         sequences = parse_fasta(fasta_content)
         if not sequences:
             return {"error": "No valid sequences found in the input"}, 400
+        
+        print(f"Parsed {len(sequences)} sequences: {list(sequences.keys())}")
         
         # Get parameters from request data
         params = {
@@ -346,6 +416,8 @@ def api_design():
             'include_probe': data.get('include_probe', False),
         }
         
+        print(f"Design parameters: {params}")
+        
         # Add probe parameters if needed
         if params['include_probe']:
             params.update({
@@ -362,14 +434,17 @@ def api_design():
         # Process each sequence
         all_results = {}
         for seq_id, sequence in sequences.items():
+            print(f"Designing primers for sequence: {seq_id} (length: {len(sequence)})")
             primer_results = design_primers(sequence, params)
             if primer_results:
+                print(f"Successfully designed primers for {seq_id}")
                 processed_results = process_primer_results(primer_results, params['include_probe'])
                 all_results[seq_id] = {
                     'sequence': sequence[:50] + "..." if len(sequence) > 50 else sequence,  # Truncate for response
                     'sequence_length': len(sequence),
                     'results': processed_results
                 }
+                print(f"Found {len(processed_results)} primer pairs for {seq_id}")
         
         if not all_results:
             return {"error": "No primers could be designed with the given parameters"}, 400
@@ -377,26 +452,43 @@ def api_design():
         return {"results": all_results}, 200
         
     except Exception as e:
+        print(f"API error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return {"error": str(e)}, 500
 
 @app.route('/download/<sequence_id>')
 def download(sequence_id):
-    temp_files = request.args.get('temp_files', '')
-    if not temp_files:
-        flash('No results to download!', 'error')
+    try:
+        print(f"Attempting to download CSV for sequence: {sequence_id}")
+        temp_files_str = request.args.get('temp_files', '')
+        
+        if not temp_files_str:
+            flash('No results to download!', 'error')
+            return redirect(url_for('index'))
+        
+        # Safely evaluate the string representation of the dictionary
+        temp_files = eval(temp_files_str)
+        
+        # Get the temp file path
+        temp_file_path = temp_files.get(sequence_id)
+        if not temp_file_path or not os.path.exists(temp_file_path):
+            flash('Results not found or expired!', 'error')
+            return redirect(url_for('index'))
+        
+        print(f"Sending file: {temp_file_path}")
+        
+        # Send the file
+        return send_file(temp_file_path, 
+                        as_attachment=True, 
+                        download_name=f'primers_{secure_filename(sequence_id)}.csv',
+                        mimetype='text/csv')
+    except Exception as e:
+        print(f"Error in download: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        flash(f'Error downloading file: {str(e)}', 'error')
         return redirect(url_for('index'))
-    
-    # Get the temp file path
-    temp_file_path = eval(temp_files).get(sequence_id)
-    if not temp_file_path or not os.path.exists(temp_file_path):
-        flash('Results not found or expired!', 'error')
-        return redirect(url_for('index'))
-    
-    # Send the file
-    return send_file(temp_file_path, 
-                    as_attachment=True, 
-                    download_name=f'primers_{secure_filename(sequence_id)}.csv',
-                    mimetype='text/csv')
 
 @app.teardown_appcontext
 def cleanup_temp_files(exception=None):
