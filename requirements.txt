@@ -1,0 +1,4 @@
+flask==2.3.3
+primer3-py==2.0.0
+biopython==1.81
+werkzeug==2.3.7

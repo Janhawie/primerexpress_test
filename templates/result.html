@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+
+{% block title %}Primer Design Results{% endblock %}
+
+{% block head_scripts %}
+<script src="https://cdn.jsdelivr.net/npm/clipboard@2.0.8/dist/clipboard.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<section class="results">
+    <h2><i class="fas fa-flask"></i> Primer Design Results</h2>
+    
+    <div class="results-summary">
+        <div class="summary-card">
+            <i class="fas fa-dna"></i>
+            <div class="summary-info">
+                <span class="summary-label">Sequences</span>
+                <span class="summary-value">{{ all_results|length }}</span>
+            </div>
+        </div>
+        
+        <div class="summary-card">
+            <i class="fas fa-microscope"></i>
+            <div class="summary-info">
+                <span class="summary-label">Total Primer Pairs</span>
+                <span class="summary-value">
+                    {% set total_pairs = 0 %}
+                    {% for seq_id, result_data in all_results.items() %}
+                        {% set total_pairs = total_pairs + result_data.results|length %}
+                    {% endfor %}
+                    {{ total_pairs }}
+                </span>
+            </div>
+        </div>
+        
+        {% if include_probe %}
+        <div class="summary-card">
+            <i class="fas fa-search"></i>
+            <div class="summary-info">
+                <span class="summary-label">Probes Included</span>
+                <span class="summary-value">Yes</span>
+            </div>
+        </div>
+        {% endif %}
+        
+        <div class="summary-card">
+            <i class="fas fa-download"></i>
+            <div class="summary-info">
+                <span class="summary-label">Download All</span>
+                <div class="dropdown">
+                    <button class="dropdown-btn btn-download">Download <i class="fas fa-caret-down"></i></button>
+                    <div class="dropdown-content">
+                        {% for seq_id in all_results.keys() %}
+                        <a href="{{ url_for('download', sequence_id=seq_id, temp_files=temp_files) }}">
+                            <i class="fas fa-file-csv"></i> {{ seq_id }}
+                        </a>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="results-nav">
+        <ul class="sequence-tabs">
+            {% for seq_id in all_results.keys() %}
+            <li class="sequence-tab" onclick="showSequence('{{ seq_id }}')">
+                <i class="fas fa-dna"></i> {{ seq_id }}
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    
+    {% for seq_id, result_data in all_results.items() %}
+    <div id="sequence_{{ seq_id }}" class="sequence-results" style="display: {% if loop.first %}block{% else %}none{% endif %};">
+        <div class="sequence-header">
+            <h3>{{ seq_id }}

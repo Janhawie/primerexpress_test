@@ -1,0 +1,292 @@
+{% extends "base.html" %}
+
+{% block title %}PCR Primer Design Tool{% endblock %}
+
+{% block head_scripts %}
+<script>
+    // To be initialized when document is ready
+    let sequenceValidator;
+</script>
+{% endblock %}
+
+{% block content %}
+<section class="intro">
+    <h2><i class="fas fa-dna"></i> Design PCR Primers and Probes</h2>
+    <p>Enter your DNA sequence and design parameters below to generate primer pairs and optional probes.</p>
+    
+    <div class="quick-actions">
+        <button id="use-sample" class="btn-secondary"><i class="fas fa-vial"></i> Use Sample Sequence</button>
+        <button id="load-preset" class="btn-secondary"><i class="fas fa-sliders-h"></i> Load Preset Parameters</button>
+        <div class="preset-dropdown" style="display: none;">
+            <div class="preset-option" data-preset="standard">Standard PCR</div>
+            <div class="preset-option" data-preset="qpcr">qPCR with Probe</div>
+            <div class="preset-option" data-preset="long">Long Amplicon</div>
+            <div class="preset-option" data-preset="custom">Custom Preset</div>
+        </div>
+    </div>
+</section>
+
+<section class="primer-form">
+    <form id="primer-design-form" action="{{ url_for('design') }}" method="post" enctype="multipart/form-data">
+        <div class="form-section">
+            <h3><i class="fas fa-file-alt"></i> Sequence Input</h3>
+            
+            <div class="input-group">
+                <label for="sequence_input_method">Input Method:</label>
+                <select id="sequence_input_method" name="sequence_input_method" onchange="toggleSequenceInput()">
+                    <option value="paste">Paste FASTA</option>
+                    <option value="upload">Upload File</option>
+                </select>
+            </div>
+            
+            <div id="paste_input" class="sequence-input">
+                <label for="sequence_text">Paste FASTA Sequence:</label>
+                <textarea id="sequence_text" name="sequence_text" rows="5" placeholder=">Sequence_Name&#10;ATGCATGCATGCATGCATGCATGCATGCATGCATGC"></textarea>
+                <div class="sequence-feedback" id="sequence-validation"></div>
+                <div class="help-text">
+                    <p>Enter DNA sequence in FASTA format. Multiple sequences are supported.</p>
+                    <div class="sequence-stats" id="sequence-stats"></div>
+                </div>
+                <div class="input-actions">
+                    <button type="button" id="validate-sequence" class="btn-action"><i class="fas fa-check-circle"></i> Validate</button>
+                    <button type="button" id="clear-sequence" class="btn-action"><i class="fas fa-trash-alt"></i> Clear</button>
+                </div>
+            </div>
+            
+            <div id="upload_input" class="sequence-input" style="display: none;">
+                <label for="sequence_file">Upload FASTA File:</label>
+                <div class="file-upload-container">
+                    <input type="file" id="sequence_file" name="sequence_file" accept=".fasta,.fa,.txt">
+                    <label for="sequence_file" class="file-upload-label">
+                        <i class="fas fa-file-upload"></i> Choose File
+                    </label>
+                    <span id="file-name">No file chosen</span>
+                </div>
+                <p class="help-text">Accepted formats: .fasta, .fa, .txt</p>
+            </div>
+        </div>
+        
+        <div class="form-section collapsible">
+            <div class="section-header" onclick="toggleCollapsible(this)">
+                <h3><i class="fas fa-microscope"></i> Primer Design Parameters</h3>
+                <i class="fas fa-chevron-down toggle-icon"></i>
+            </div>
+            
+            <div class="section-content">
+                <div class="parameter-group">
+                    <h4>Primer Length</h4>
+                    <div class="input-group">
+                        <label for="primer_opt_size">Optimal Size:</label>
+                        <input type="number" id="primer_opt_size" name="primer_opt_size" value="20" min="15" max="35">
+                        <span>bp</span>
+                    </div>
+                    <div class="input-group">
+                        <label for="primer_min_size">Minimum Size:</label>
+                        <input type="number" id="primer_min_size" name="primer_min_size" value="18" min="15" max="30">
+                        <span>bp</span>
+                    </div>
+                    <div class="input-group">
+                        <label for="primer_max_size">Maximum Size:</label>
+                        <input type="number" id="primer_max_size" name="primer_max_size" value="27" min="20" max="35">
+                        <span>bp</span>
+                    </div>
+                </div>
+                
+                <div class="parameter-group">
+                    <h4>Melting Temperature (Tm)</h4>
+                    <div class="input-group">
+                        <label for="primer_opt_tm">Optimal Tm:</label>
+                        <input type="number" id="primer_opt_tm" name="primer_opt_tm" value="60.0" min="50" max="70" step="0.1">
+                        <span>°C</span>
+                    </div>
+                    <div class="input-group">
+                        <label for="primer_min_tm">Minimum Tm:</label>
+                        <input type="number" id="primer_min_tm" name="primer_min_tm" value="57.0" min="45" max="65" step="0.1">
+                        <span>°C</span>
+                    </div>
+                    <div class="input-group">
+                        <label for="primer_max_tm">Maximum Tm:</label>
+                        <input type="number" id="primer_max_tm" name="primer_max_tm" value="63.0" min="55" max="75" step="0.1">
+                        <span>°C</span>
+                    </div>
+                </div>
+                
+                <div class="parameter-group">
+                    <h4>GC Content</h4>
+                    <div class="input-group">
+                        <label for="primer_min_gc">Minimum GC:</label>
+                        <input type="number" id="primer_min_gc" name="primer_min_gc" value="20.0" min="20" max="60" step="0.1">
+                        <span>%</span>
+                    </div>
+                    <div class="input-group">
+                        <label for="primer_max_gc">Maximum GC:</label>
+                        <input type="number" id="primer_max_gc" name="primer_max_gc" value="80.0" min="40" max="80" step="0.1">
+                        <span>%</span>
+                    </div>
+                </div>
+                
+                <div class="parameter-group">
+                    <h4>Product Size</h4>
+                    <div class="input-group">
+                        <label for="product_min_size">Minimum Size:</label>
+                        <input type="number" id="product_min_size" name="product_min_size" value="100" min="50" max="1000">
+                        <span>bp</span>
+                    </div>
+                    <div class="input-group">
+                        <label for="product_max_size">Maximum Size:</label>
+                        <input type="number" id="product_max_size" name="product_max_size" value="1000" min="100" max="5000">
+                        <span>bp</span>
+                    </div>
+                </div>
+                
+                <div class="input-group">
+                    <label for="num_primer_pairs">Number of Primer Pairs to Return:</label>
+                    <input type="number" id="num_primer_pairs" name="num_primer_pairs" value="5" min="1" max="20">
+                </div>
+                
+                <div class="parameter-actions">
+                    <button type="button" id="reset-parameters" class="btn-action"><i class="fas fa-undo"></i> Reset to Defaults</button>
+                </div>
+            </div>
+        </div>
+        
+        <div class="form-section collapsible">
+            <div class="section-header" onclick="toggleCollapsible(this)">
+                <h3><i class="fas fa-search"></i> Probe Design</h3>
+                <i class="fas fa-chevron-down toggle-icon"></i>
+            </div>
+            
+            <div class="section-content">
+                <div class="input-group checkbox">
+                    <input type="checkbox" id="include_probe" name="include_probe" onchange="toggleProbeParams()">
+                    <label for="include_probe">Include Probes</label>
+                </div>
+                
+                <div id="probe_parameters" style="display: none;">
+                    <div class="parameter-group">
+                        <h4>Probe Length</h4>
+                        <div class="input-group">
+                            <label for="probe_opt_size">Optimal Size:</label>
+                            <input type="number" id="probe_opt_size" name="probe_opt_size" value="20" min="15" max="35">
+                            <span>bp</span>
+                        </div>
+                        <div class="input-group">
+                            <label for="probe_min_size">Minimum Size:</label>
+                            <input type="number" id="probe_min_size" name="probe_min_size" value="18" min="15" max="30">
+                            <span>bp</span>
+                        </div>
+                        <div class="input-group">
+                            <label for="probe_max_size">Maximum Size:</label>
+                            <input type="number" id="probe_max_size" name="probe_max_size" value="27" min="20" max="35">
+                            <span>bp</span>
+                        </div>
+                    </div>
+                    
+                    <div class="parameter-group">
+                        <h4>Probe Melting Temperature (Tm)</h4>
+                        <div class="input-group">
+                            <label for="probe_opt_tm">Optimal Tm:</label>
+                            <input type="number" id="probe_opt_tm" name="probe_opt_tm" value="65.0" min="55" max="75" step="0.1">
+                            <span>°C</span>
+                        </div>
+                        <div class="input-group">
+                            <label for="probe_min_tm">Minimum Tm:</label>
+                            <input type="number" id="probe_min_tm" name="probe_min_tm" value="62.0" min="50" max="70" step="0.1">
+                            <span>°C</span>
+                        </div>
+                        <div class="input-group">
+                            <label for="probe_max_tm">Maximum Tm:</label>
+                            <input type="number" id="probe_max_tm" name="probe_max_tm" value="68.0" min="60" max="80" step="0.1">
+                            <span>°C</span>
+                        </div>
+                    </div>
+                    
+                    <div class="parameter-group">
+                        <h4>Probe GC Content</h4>
+                        <div class="input-group">
+                            <label for="probe_min_gc">Minimum GC:</label>
+                            <input type="number" id="probe_min_gc" name="probe_min_gc" value="20.0" min="20" max="60" step="0.1">
+                            <span>%</span>
+                        </div>
+                        <div class="input-group">
+                            <label for="probe_max_gc">Maximum GC:</label>
+                            <input type="number" id="probe_max_gc" name="probe_max_gc" value="80.0" min="40" max="80" step="0.1">
+                            <span>%</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="form-buttons">
+            <button type="submit" id="submit-btn" class="btn-primary"><i class="fas fa-flask"></i> Design Primers</button>
+            <button type="button" id="quick-design-btn" class="btn-primary"><i class="fas fa-bolt"></i> Quick Design</button>
+            <button type="reset" class="btn-secondary"><i class="fas fa-sync-alt"></i> Reset Form</button>
+        </div>
+        
+        <!-- Results container for quick design -->
+        <div id="quick-results" class="quick-results" style="display: none;"></div>
+    </form>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Sample sequence variable
+    const sampleSequence = `{{ sample_sequence }}`;
+    
+    // Parameter presets
+    const presets = {
+        standard: {
+            primer_opt_size: 20,
+            primer_min_size: 18,
+            primer_max_size: 27,
+            primer_opt_tm: 60.0,
+            primer_min_tm: 57.0,
+            primer_max_tm: 63.0,
+            primer_min_gc: 40.0,
+            primer_max_gc: 60.0,
+            product_min_size: 100,
+            product_max_size: 1000,
+            num_primer_pairs: 5,
+            include_probe: false
+        },
+        qpcr: {
+            primer_opt_size: 22,
+            primer_min_size: 18,
+            primer_max_size: 25,
+            primer_opt_tm: 60.0,
+            primer_min_tm: 58.0,
+            primer_max_tm: 62.0,
+            primer_min_gc: 40.0,
+            primer_max_gc: 60.0,
+            product_min_size: 70,
+            product_max_size: 150,
+            num_primer_pairs: 3,
+            include_probe: true,
+            probe_opt_size: 24,
+            probe_min_size: 20,
+            probe_max_size: 30,
+            probe_opt_tm: 68.0,
+            probe_min_tm: 65.0,
+            probe_max_tm: 70.0,
+            probe_min_gc: 40.0,
+            probe_max_gc: 60.0
+        },
+        long: {
+            primer_opt_size: 24,
+            primer_min_size: 20,
+            primer_max_size: 30,
+            primer_opt_tm: 65.0,
+            primer_min_tm: 62.0,
+            primer_max_tm: 68.0,
+            primer_min_gc: 45.0,
+            primer_max_gc: 65.0,
+            product_min_size: 1000,
+            product_max_size: 3000,
+            num_primer_pairs: 3,
+            include_probe: false
+        }
+    };
+</script>
+{% endblock %}

@@ -1,0 +1,408 @@
+from flask import Flask, render_template, request, redirect, url_for, flash, send_file
+from werkzeug.utils import secure_filename
+import primer3
+import io
+import csv
+import os
+import re
+from Bio import SeqIO
+from tempfile import NamedTemporaryFile
+
+app = Flask(__name__)
+# In production, use environment variable: os.environ.get('SECRET_KEY')
+app.secret_key = 'primer_design_secret_key'
+app.config['MAX_CONTENT_LENGTH'] = 1 * 1024 * 1024  # 1MB max upload size
+app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['JSON_AS_ASCII'] = False  # Support for non-ASCII characters in JSON responses
+
+# Create upload folder if it doesn't exist
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+# Allowed file extensions
+ALLOWED_EXTENSIONS = {'fasta', 'fa', 'txt'}
+
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def parse_fasta(fasta_content):
+    """Parse FASTA string content into a dictionary of {id: sequence}"""
+    sequences = {}
+    
+    # Use StringIO to create a file-like object from the string
+    fasta_handle = io.StringIO(fasta_content)
+    
+    # Parse with BioPython
+    for record in SeqIO.parse(fasta_handle, "fasta"):
+        sequences[record.id] = str(record.seq).upper()
+    
+    return sequences
+
+def design_primers(sequence, params):
+    """Design primers using primer3-py with the provided parameters"""
+    try:
+        # Prepare primer3 parameters
+        primer3_params = {
+            'SEQUENCE_ID': 'target_sequence',
+            'SEQUENCE_TEMPLATE': sequence,
+            'PRIMER_OPT_SIZE': int(params.get('primer_opt_size', 20)),
+            'PRIMER_MIN_SIZE': int(params.get('primer_min_size', 18)),
+            'PRIMER_MAX_SIZE': int(params.get('primer_max_size', 27)),
+            'PRIMER_OPT_TM': float(params.get('primer_opt_tm', 60.0)),
+            'PRIMER_MIN_TM': float(params.get('primer_min_tm', 57.0)),
+            'PRIMER_MAX_TM': float(params.get('primer_max_tm', 63.0)),
+            'PRIMER_MIN_GC': float(params.get('primer_min_gc', 20.0)),
+            'PRIMER_MAX_GC': float(params.get('primer_max_gc', 80.0)),
+            'PRIMER_PRODUCT_SIZE_RANGE': [[int(params.get('product_min_size', 100)), 
+                                           int(params.get('product_max_size', 1000))]],
+            'PRIMER_NUM_RETURN': int(params.get('num_primer_pairs', 5))
+        }
+        
+        # Add internal oligo (probe) parameters if requested
+        if params.get('include_probe', False):
+            primer3_params.update({
+                'PRIMER_PICK_INTERNAL_OLIGO': 1,
+                'PRIMER_INTERNAL_OPT_SIZE': int(params.get('probe_opt_size', 20)),
+                'PRIMER_INTERNAL_MIN_SIZE': int(params.get('probe_min_size', 18)),
+                'PRIMER_INTERNAL_MAX_SIZE': int(params.get('probe_max_size', 27)),
+                'PRIMER_INTERNAL_OPT_TM': float(params.get('probe_opt_tm', 60.0)),
+                'PRIMER_INTERNAL_MIN_TM': float(params.get('probe_min_tm', 57.0)),
+                'PRIMER_INTERNAL_MAX_TM': float(params.get('probe_max_tm', 63.0)),
+                'PRIMER_INTERNAL_MIN_GC': float(params.get('probe_min_gc', 20.0)),
+                'PRIMER_INTERNAL_MAX_GC': float(params.get('probe_max_gc', 80.0)),
+            })
+        
+        # Run primer3 design
+        primer_results = primer3.bindings.designPrimers(primer3_params)
+        return primer_results
+    
+    except Exception as e:
+        print(f"Error in primer design: {e}")
+        return None
+
+def process_primer_results(primer_results, include_probe=False):
+    """Process primer3 results into a more usable format"""
+    processed_results = []
+    
+    if not primer_results:
+        return processed_results
+    
+    num_primer_pairs = primer_results.get('PRIMER_PAIR_NUM_RETURNED', 0)
+    
+    for i in range(num_primer_pairs):
+        pair = {
+            'pair_id': i + 1,
+            'forward_primer': {
+                'sequence': primer_results.get(f'PRIMER_LEFT_{i}_SEQUENCE'),
+                'position': primer_results.get(f'PRIMER_LEFT_{i}')[0] + 1,  # 1-based position
+                'length': primer_results.get(f'PRIMER_LEFT_{i}')[1],
+                'tm': primer_results.get(f'PRIMER_LEFT_{i}_TM'),
+                'gc_percent': primer_results.get(f'PRIMER_LEFT_{i}_GC_PERCENT')
+            },
+            'reverse_primer': {
+                'sequence': primer_results.get(f'PRIMER_RIGHT_{i}_SEQUENCE'),
+                'position': primer_results.get(f'PRIMER_RIGHT_{i}')[0] + 1,  # 1-based position
+                'length': primer_results.get(f'PRIMER_RIGHT_{i}')[1],
+                'tm': primer_results.get(f'PRIMER_RIGHT_{i}_TM'),
+                'gc_percent': primer_results.get(f'PRIMER_RIGHT_{i}_GC_PERCENT')
+            },
+            'product_size': primer_results.get(f'PRIMER_PAIR_{i}_PRODUCT_SIZE'),
+            'pair_penalty': primer_results.get(f'PRIMER_PAIR_{i}_PENALTY')
+        }
+        
+        # Add probe information if available
+        if include_probe and f'PRIMER_INTERNAL_{i}_SEQUENCE' in primer_results:
+            pair['probe'] = {
+                'sequence': primer_results.get(f'PRIMER_INTERNAL_{i}_SEQUENCE'),
+                'position': primer_results.get(f'PRIMER_INTERNAL_{i}')[0] + 1,  # 1-based position
+                'length': primer_results.get(f'PRIMER_INTERNAL_{i}')[1],
+                'tm': primer_results.get(f'PRIMER_INTERNAL_{i}_TM'),
+                'gc_percent': primer_results.get(f'PRIMER_INTERNAL_{i}_GC_PERCENT')
+            }
+        
+        processed_results.append(pair)
+    
+    return processed_results
+
+def generate_csv(results, sequence_id, include_probe=False):
+    """Generate CSV content from primer design results"""
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Write headers
+    headers = ['Pair ID', 'Sequence ID',
+               'Forward Primer', 'Forward Position', 'Forward Length', 'Forward Tm', 'Forward GC%',
+               'Reverse Primer', 'Reverse Position', 'Reverse Length', 'Reverse Tm', 'Reverse GC%',
+               'Product Size', 'Pair Penalty']
+    
+    if include_probe:
+        headers.extend(['Probe Sequence', 'Probe Position', 'Probe Length', 'Probe Tm', 'Probe GC%'])
+    
+    writer.writerow(headers)
+    
+    # Write data rows
+    for pair in results:
+        row = [
+            pair['pair_id'], sequence_id,
+            pair['forward_primer']['sequence'], pair['forward_primer']['position'], pair['forward_primer']['length'],
+            f"{pair['forward_primer']['tm']:.2f}", f"{pair['forward_primer']['gc_percent']:.2f}",
+            pair['reverse_primer']['sequence'], pair['reverse_primer']['position'], pair['reverse_primer']['length'],
+            f"{pair['reverse_primer']['tm']:.2f}", f"{pair['reverse_primer']['gc_percent']:.2f}",
+            pair['product_size'], f"{pair['pair_penalty']:.2f}"
+        ]
+        
+        if include_probe and 'probe' in pair:
+            row.extend([
+                pair['probe']['sequence'], pair['probe']['position'], pair['probe']['length'],
+                f"{pair['probe']['tm']:.2f}", f"{pair['probe']['gc_percent']:.2f}"
+            ])
+        
+        writer.writerow(row)
+    
+    return output.getvalue()
+
+@app.route('/')
+def index():
+    # Get a sample sequence for demo purposes
+    sample_sequence = """>BRCA1_fragment
+ATGGATTTATCTGCTCTTCGCGTTGAAGAAGTACAAAATGTCATTAATGCTATGCAGAAAATCTTAGA
+GTGTCCCATCTGTCTGGAGTTGATCAAGGAACCTGTCTCCACAAAGTGTGACCACATATTTTGCAAAT
+TTTGCATGCTGAAACTTCTCAACCAGAAGAAAGGGCCTTCACAGTGTCCTTTATGTAAGAATGATAAA
+GGAAATACAGCTTGCTCACTTCGTTACTTCAGGCCCCTCAAATCTGTGGGAGCCACACCTGATGACAC
+"""
+    return render_template('index.html', sample_sequence=sample_sequence)
+
+@app.route('/design', methods=['POST'])
+def design():
+    try:
+        # Get sequence input method
+        sequence_input_method = request.form.get('sequence_input_method')
+        
+        # Get sequence data based on input method
+        sequences = {}
+        
+        if sequence_input_method == 'paste':
+            fasta_content = request.form.get('sequence_text', '')
+            if not fasta_content:
+                flash('No sequence provided!', 'error')
+                return redirect(url_for('index'))
+            
+            # Check if input is in FASTA format
+            if not fasta_content.startswith('>'):
+                # Try to convert plain sequence to FASTA
+                sequence = re.sub(r'[^ATGCN]', '', fasta_content.upper())
+                if sequence:
+                    fasta_content = f">Sequence\n{sequence}"
+                else:
+                    flash('Invalid sequence format!', 'error')
+                    return redirect(url_for('index'))
+            
+            sequences = parse_fasta(fasta_content)
+            
+        elif sequence_input_method == 'upload':
+            # Check if a file was uploaded
+            if 'sequence_file' not in request.files:
+                flash('No file uploaded!', 'error')
+                return redirect(url_for('index'))
+            
+            file = request.files['sequence_file']
+            
+            # Check if the file is valid
+            if file.filename == '':
+                flash('No file selected!', 'error')
+                return redirect(url_for('index'))
+            
+            if not allowed_file(file.filename):
+                flash('Invalid file type! Please upload a FASTA file (.fasta, .fa, or .txt)', 'error')
+                return redirect(url_for('index'))
+            
+            # Read and parse the file
+            filename = secure_filename(file.filename)
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            file.save(filepath)
+            
+            with open(filepath, 'r') as f:
+                fasta_content = f.read()
+            
+            # Clean up the uploaded file
+            os.remove(filepath)
+            
+            sequences = parse_fasta(fasta_content)
+        
+        if not sequences:
+            flash('No valid sequences found in the input!', 'error')
+            return redirect(url_for('index'))
+        
+        # Get primer design parameters
+        params = {
+            'primer_opt_size': request.form.get('primer_opt_size', 20),
+            'primer_min_size': request.form.get('primer_min_size', 18),
+            'primer_max_size': request.form.get('primer_max_size', 27),
+            'primer_opt_tm': request.form.get('primer_opt_tm', 60.0),
+            'primer_min_tm': request.form.get('primer_min_tm', 57.0),
+            'primer_max_tm': request.form.get('primer_max_tm', 63.0),
+            'primer_min_gc': request.form.get('primer_min_gc', 20.0),
+            'primer_max_gc': request.form.get('primer_max_gc', 80.0),
+            'product_min_size': request.form.get('product_min_size', 100),
+            'product_max_size': request.form.get('product_max_size', 1000),
+            'num_primer_pairs': request.form.get('num_primer_pairs', 5),
+            'include_probe': 'include_probe' in request.form,
+            'probe_opt_size': request.form.get('probe_opt_size', 20),
+            'probe_min_size': request.form.get('probe_min_size', 18),
+            'probe_max_size': request.form.get('probe_max_size', 27),
+            'probe_opt_tm': request.form.get('probe_opt_tm', 65.0),
+            'probe_min_tm': request.form.get('probe_min_tm', 62.0),
+            'probe_max_tm': request.form.get('probe_max_tm', 68.0),
+            'probe_min_gc': request.form.get('probe_min_gc', 20.0),
+            'probe_max_gc': request.form.get('probe_max_gc', 80.0),
+        }
+        
+        # Check if parameters are valid
+        for key in params:
+            if key.startswith(('primer_', 'probe_', 'product_')) and key.endswith(('_size', '_tm', '_gc')):
+                try:
+                    if key.endswith('_size'):
+                        params[key] = int(params[key])
+                    else:
+                        params[key] = float(params[key])
+                except ValueError:
+                    flash(f'Invalid value for parameter: {key}', 'error')
+                    return redirect(url_for('index'))
+        
+        # Process each sequence
+        all_results = {}
+        for seq_id, sequence in sequences.items():
+            primer_results = design_primers(sequence, params)
+            if primer_results:
+                processed_results = process_primer_results(primer_results, params['include_probe'])
+                all_results[seq_id] = {
+                    'sequence': sequence,
+                    'results': processed_results
+                }
+            else:
+                flash(f'Failed to design primers for sequence: {seq_id}', 'warning')
+        
+        if not all_results:
+            flash('No primers could be designed with the given parameters!', 'error')
+            return redirect(url_for('index'))
+        
+        # Store results in session for download later
+        # We'll save CSV content to temp files and keep track of them
+        temp_files = {}
+        for seq_id, result in all_results.items():
+            csv_content = generate_csv(result['results'], seq_id, params['include_probe'])
+            temp_file = NamedTemporaryFile(delete=False, suffix='.csv')
+            with open(temp_file.name, 'w') as f:
+                f.write(csv_content)
+            temp_files[seq_id] = temp_file.name
+        
+        return render_template('results.html', 
+                               all_results=all_results, 
+                               temp_files=temp_files,
+                               include_probe=params['include_probe'])
+        
+    except Exception as e:
+        flash(f'An error occurred: {str(e)}', 'error')
+        return redirect(url_for('index'))
+
+@app.route('/api/design', methods=['POST'])
+def api_design():
+    """API endpoint for primer design (for AJAX requests)"""
+    try:
+        data = request.get_json()
+        
+        # Extract sequence
+        fasta_content = data.get('sequence', '')
+        if not fasta_content:
+            return {"error": "No sequence provided"}, 400
+        
+        # Check if input is in FASTA format
+        if not fasta_content.startswith('>'):
+            # Try to convert plain sequence to FASTA
+            sequence = re.sub(r'[^ATGCN]', '', fasta_content.upper())
+            if sequence:
+                fasta_content = f">Sequence\n{sequence}"
+            else:
+                return {"error": "Invalid sequence format"}, 400
+        
+        # Parse the sequence
+        sequences = parse_fasta(fasta_content)
+        if not sequences:
+            return {"error": "No valid sequences found in the input"}, 400
+        
+        # Get parameters from request data
+        params = {
+            'primer_opt_size': int(data.get('primer_opt_size', 20)),
+            'primer_min_size': int(data.get('primer_min_size', 18)),
+            'primer_max_size': int(data.get('primer_max_size', 27)),
+            'primer_opt_tm': float(data.get('primer_opt_tm', 60.0)),
+            'primer_min_tm': float(data.get('primer_min_tm', 57.0)),
+            'primer_max_tm': float(data.get('primer_max_tm', 63.0)),
+            'primer_min_gc': float(data.get('primer_min_gc', 20.0)),
+            'primer_max_gc': float(data.get('primer_max_gc', 80.0)),
+            'product_min_size': int(data.get('product_min_size', 100)),
+            'product_max_size': int(data.get('product_max_size', 1000)),
+            'num_primer_pairs': int(data.get('num_primer_pairs', 5)),
+            'include_probe': data.get('include_probe', False),
+        }
+        
+        # Add probe parameters if needed
+        if params['include_probe']:
+            params.update({
+                'probe_opt_size': int(data.get('probe_opt_size', 20)),
+                'probe_min_size': int(data.get('probe_min_size', 18)),
+                'probe_max_size': int(data.get('probe_max_size', 27)),
+                'probe_opt_tm': float(data.get('probe_opt_tm', 65.0)),
+                'probe_min_tm': float(data.get('probe_min_tm', 62.0)),
+                'probe_max_tm': float(data.get('probe_max_tm', 68.0)),
+                'probe_min_gc': float(data.get('probe_min_gc', 20.0)),
+                'probe_max_gc': float(data.get('probe_max_gc', 80.0)),
+            })
+        
+        # Process each sequence
+        all_results = {}
+        for seq_id, sequence in sequences.items():
+            primer_results = design_primers(sequence, params)
+            if primer_results:
+                processed_results = process_primer_results(primer_results, params['include_probe'])
+                all_results[seq_id] = {
+                    'sequence': sequence[:50] + "..." if len(sequence) > 50 else sequence,  # Truncate for response
+                    'sequence_length': len(sequence),
+                    'results': processed_results
+                }
+        
+        if not all_results:
+            return {"error": "No primers could be designed with the given parameters"}, 400
+        
+        return {"results": all_results}, 200
+        
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+@app.route('/download/<sequence_id>')
+def download(sequence_id):
+    temp_files = request.args.get('temp_files', '')
+    if not temp_files:
+        flash('No results to download!', 'error')
+        return redirect(url_for('index'))
+    
+    # Get the temp file path
+    temp_file_path = eval(temp_files).get(sequence_id)
+    if not temp_file_path or not os.path.exists(temp_file_path):
+        flash('Results not found or expired!', 'error')
+        return redirect(url_for('index'))
+    
+    # Send the file
+    return send_file(temp_file_path, 
+                    as_attachment=True, 
+                    download_name=f'primers_{secure_filename(sequence_id)}.csv',
+                    mimetype='text/csv')
+
+@app.teardown_appcontext
+def cleanup_temp_files(exception=None):
+    """Clean up temporary files at the end of the request"""
+    # This would need to be improved in a production app to avoid file leaks
+    pass
+
+if __name__ == '__main__':
+    app.run(debug=True)
