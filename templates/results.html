@@ -17,6 +17,75 @@ if [ -f "templates/results.html" ]; then
 {% endblock %}
 
 {% block content %}
+<style>
+    /* Existing styles */
+    .summary-card {
+        background-color: #fff;
+        border-radius: 8px;
+        padding: 20px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        margin-bottom: 20px;
+    }
+    
+    /* BLAST specific styles */
+    .blast-btn {
+        background-color: #4CAF50;
+        color: white;
+        border: none;
+        padding: 4px 8px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 0.9em;
+        margin-left: 5px;
+    }
+
+    .blast-btn:hover {
+        background-color: #45a049;
+    }
+
+    .blast-results {
+        margin-top: 10px;
+        padding: 10px;
+        background-color: #f8f9fa;
+        border: 1px solid #dee2e6;
+        border-radius: 4px;
+    }
+
+    .blast-result-item {
+        margin-bottom: 8px;
+        padding: 8px;
+        background-color: white;
+        border: 1px solid #e9ecef;
+        border-radius: 4px;
+    }
+
+    .blast-result-item h5 {
+        margin: 0 0 5px 0;
+        color: #2c3e50;
+    }
+
+    .blast-result-item p {
+        margin: 2px 0;
+        font-size: 0.9em;
+        color: #495057;
+    }
+
+    .blast-loading {
+        text-align: center;
+        padding: 20px;
+        color: #666;
+    }
+
+    .blast-error {
+        color: #dc3545;
+        padding: 10px;
+        background-color: #f8d7da;
+        border: 1px solid #f5c6cb;
+        border-radius: 4px;
+        margin-top: 10px;
+    }
+</style>
+
 <section class="results">
     <h2><i class="fas fa-flask"></i> Primer Design Results</h2>
     
@@ -173,7 +242,11 @@ if [ -f "templates/results.html" ]; then
                                 <button class="copy-btn" data-clipboard-target="#fwd_{{ seq_id }}_{{ pair.pair_id }}">
                                     <i class="fas fa-copy"></i>
                                 </button>
+                                <button class="blast-btn" onclick="performBlast('{{ pair.forward_primer.sequence }}', 'fwd_{{ seq_id }}_{{ pair.pair_id }}')">
+                                    <i class="fas fa-search"></i> BLAST
+                                </button>
                             </div>
+                            <div id="blast_results_fwd_{{ seq_id }}_{{ pair.pair_id }}" class="blast-results" style="display: none;"></div>
                         </td>
                         <td class="primer-cell">
                             <div class="primer-sequence" id="rev_{{ seq_id }}_{{ pair.pair_id }}">{{ pair.reverse_primer.sequence }}</div>
@@ -184,7 +257,11 @@ if [ -f "templates/results.html" ]; then
                                 <button class="copy-btn" data-clipboard-target="#rev_{{ seq_id }}_{{ pair.pair_id }}">
                                     <i class="fas fa-copy"></i>
                                 </button>
+                                <button class="blast-btn" onclick="performBlast('{{ pair.reverse_primer.sequence }}', 'rev_{{ seq_id }}_{{ pair.pair_id }}')">
+                                    <i class="fas fa-search"></i> BLAST
+                                </button>
                             </div>
+                            <div id="blast_results_rev_{{ seq_id }}_{{ pair.pair_id }}" class="blast-results" style="display: none;"></div>
                         </td>
                         {% if include_probe and pair.probe %}
                         <td class="primer-cell">
@@ -368,6 +445,55 @@ if [ -f "templates/results.html" ]; then
         rows.forEach(row => {
             row.style.display = '';
         });
+    }
+
+    async function performBlast(sequence, targetId) {
+        const resultsDiv = document.getElementById('blast_results_' + targetId);
+        resultsDiv.innerHTML = '<div class="blast-loading"><i class="fas fa-spinner fa-spin"></i> Performing BLAST search... This may take a few minutes.</div>';
+        resultsDiv.style.display = 'block';
+        
+        try {
+            const response = await fetch('/api/blast', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ sequence: sequence })
+            });
+            
+            const data = await response.json();
+            
+            if (data.error) {
+                resultsDiv.innerHTML = `<div class="blast-error">${data.error}</div>`;
+                return;
+            }
+            
+            if (!data.results || data.results.length === 0) {
+                resultsDiv.innerHTML = '<div class="blast-result-item">No significant matches found.</div>';
+                return;
+            }
+            
+            let resultsHtml = '';
+            data.results.forEach(result => {
+                resultsHtml += `
+                    <div class="blast-result-item">
+                        <h5>${result.title}</h5>
+                        <p>Length: ${result.length} bp</p>
+                        <p>E-value: ${result.e_value}</p>
+                        <p>Score: ${result.score}</p>
+                        <p>Identities: ${result.identities}/${result.alignment_length} (${((result.identities/result.alignment_length)*100).toFixed(1)}%)</p>
+                        <p>Gaps: ${result.gaps}</p>
+                        <p>Query: ${result.query_start}-${result.query_end}</p>
+                        <p>Subject: ${result.sbjct_start}-${result.sbjct_end}</p>
+                    </div>
+                `;
+            });
+            
+            resultsDiv.innerHTML = resultsHtml;
+            
+        } catch (error) {
+            resultsDiv.innerHTML = `<div class="blast-error">Error performing BLAST search: ${error.message}</div>`;
+        }
     }
 </script>
 {% endblock %}

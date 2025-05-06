@@ -7,6 +7,9 @@ import os
 import re
 from Bio import SeqIO
 from tempfile import NamedTemporaryFile
+from Bio.Blast import NCBIWWW
+from Bio.Seq import Seq
+import time
 
 app = Flask(__name__)
 # In production, use environment variable: os.environ.get('SECRET_KEY')
@@ -189,6 +192,40 @@ def generate_csv(results, sequence_id, include_probe=False):
         writer.writerow(row)
     
     return output.getvalue()
+
+def perform_blast_search(sequence, program="blastn", database="nt", hitlist_size=10):
+    """Perform BLAST search using NCBI's web service"""
+    try:
+        # Perform BLAST search
+        result_handle = NCBIWWW.qblast(program, database, sequence, hitlist_size=hitlist_size)
+        
+        # Parse the results
+        from Bio.Blast import NCBIXML
+        blast_records = NCBIXML.parse(result_handle)
+        
+        # Process results
+        blast_results = []
+        for blast_record in blast_records:
+            for alignment in blast_record.alignments:
+                for hsp in alignment.hsps:
+                    blast_results.append({
+                        'title': alignment.title,
+                        'length': alignment.length,
+                        'e_value': hsp.expect,
+                        'score': hsp.score,
+                        'identities': hsp.identities,
+                        'gaps': hsp.gaps,
+                        'query_start': hsp.query_start,
+                        'query_end': hsp.query_end,
+                        'sbjct_start': hsp.sbjct_start,
+                        'sbjct_end': hsp.sbjct_end,
+                        'alignment_length': hsp.align_length
+                    })
+        
+        return blast_results
+    except Exception as e:
+        print(f"BLAST search error: {str(e)}")
+        return None
 
 @app.route('/')
 def index():
@@ -495,6 +532,28 @@ def cleanup_temp_files(exception=None):
     """Clean up temporary files at the end of the request"""
     # This would need to be improved in a production app to avoid file leaks
     pass
+
+@app.route('/api/blast', methods=['POST'])
+def api_blast():
+    """API endpoint for BLAST analysis"""
+    try:
+        data = request.get_json()
+        sequence = data.get('sequence', '')
+        
+        if not sequence:
+            return {"error": "No sequence provided"}, 400
+        
+        # Perform BLAST search
+        blast_results = perform_blast_search(sequence)
+        
+        if blast_results is None:
+            return {"error": "BLAST search failed"}, 500
+        
+        return {"results": blast_results}, 200
+        
+    except Exception as e:
+        print(f"API error: {str(e)}")
+        return {"error": str(e)}, 500
 
 if __name__ == '__main__':
     app.run(debug=True)
