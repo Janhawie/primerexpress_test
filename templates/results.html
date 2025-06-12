@@ -98,20 +98,6 @@ if [ -f "templates/results.html" ]; then
             </div>
         </div>
         
-        <div class="summary-card">
-            <i class="fas fa-microscope"></i>
-            <div class="summary-info">
-                <span class="summary-label">Total Primer Pairs</span>
-                <span class="summary-value">
-                    {% set total_pairs = 0 %}
-                    {% for seq_id, result_data in all_results.items() %}
-                        {% set total_pairs = total_pairs + result_data.results|length %}
-                    {% endfor %}
-                    {{ total_pairs }}
-                </span>
-            </div>
-        </div>
-        
         {% if include_probe %}
         <div class="summary-card">
             <i class="fas fa-search"></i>
@@ -234,7 +220,7 @@ if [ -f "templates/results.html" ]; then
                         <td>{{ pair.pair_id }}</td>
                         <td>{{ pair.product_size }} bp</td>
                         <td class="primer-cell">
-                            <div class="primer-sequence" id="fwd_{{ seq_id }}_{{ pair.pair_id }}">{{ pair.forward_primer.sequence }}</div>
+                            <div class="primer-sequence" id="fwd_{{ seq_id }}_{{ pair.pair_id }}">5'-{{ pair.forward_primer.sequence }}-3'</div>
                             <div class="primer-stats">
                                 <span>{{ pair.forward_primer.length }} bp</span>
                                 <span>{{ "%.1f"|format(pair.forward_primer.tm) }}°C</span>
@@ -249,7 +235,7 @@ if [ -f "templates/results.html" ]; then
                             <div id="blast_results_fwd_{{ seq_id }}_{{ pair.pair_id }}" class="blast-results" style="display: none;"></div>
                         </td>
                         <td class="primer-cell">
-                            <div class="primer-sequence" id="rev_{{ seq_id }}_{{ pair.pair_id }}">{{ pair.reverse_primer.sequence }}</div>
+                            <div class="primer-sequence" id="rev_{{ seq_id }}_{{ pair.pair_id }}">5'-{{ pair.reverse_primer.sequence }}-3'</div>
                             <div class="primer-stats">
                                 <span>{{ pair.reverse_primer.length }} bp</span>
                                 <span>{{ "%.1f"|format(pair.reverse_primer.tm) }}°C</span>
@@ -265,7 +251,7 @@ if [ -f "templates/results.html" ]; then
                         </td>
                         {% if include_probe and pair.probe %}
                         <td class="primer-cell">
-                            <div class="primer-sequence" id="probe_{{ seq_id }}_{{ pair.pair_id }}">{{ pair.probe.sequence }}</div>
+                            <div class="primer-sequence" id="probe_{{ seq_id }}_{{ pair.pair_id }}">5'-{{ pair.probe.sequence }}-3'</div>
                             <div class="primer-stats">
                                 <span>{{ pair.probe.length }} bp</span>
                                 <span>{{ "%.1f"|format(pair.probe.tm) }}°C</span>
@@ -468,8 +454,44 @@ if [ -f "templates/results.html" ]; then
                 return;
             }
             
+            if (data.message && data.details) {
+                // Display the positive message with styling
+                resultsDiv.innerHTML = `
+                    <div class="blast-result-item" style="
+                        color: ${data.details.style.color};
+                        background: ${data.details.style.background};
+                        border: ${data.details.style.border};
+                        padding: ${data.details.style.padding};
+                        border-radius: ${data.details.style.borderRadius};
+                    ">
+                        <h5>${data.message}</h5>
+                        <ul style="margin-top: 10px; padding-left: 20px;">
+                            ${data.details.implications.map(imp => `<li>${imp}</li>`).join('')}
+                        </ul>
+                    </div>
+                `;
+                return;
+            }
+            
             if (!data.results || data.results.length === 0) {
-                resultsDiv.innerHTML = '<div class="blast-result-item">No significant matches found.</div>';
+                resultsDiv.innerHTML = `
+                    <div class="blast-result-item" style="
+                        color: #2e7d32;
+                        background: #e8f5e9;
+                        border: 1px solid #81c784;
+                        padding: 15px;
+                        border-radius: 5px;
+                    ">
+                        <h5>No significant matches found</h5>
+                        <p>This could be because:</p>
+                        <ul style="margin-top: 10px; padding-left: 20px;">
+                            <li>The sequence is unique</li>
+                            <li>The sequence is not in the database</li>
+                            <li>The primer is highly specific to your target</li>
+                        </ul>
+                        <p style="margin-top: 10px;">The primer appears to be specific and safe to use.</p>
+                    </div>
+                `;
                 return;
             }
             
