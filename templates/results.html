@@ -473,7 +473,10 @@ if [ -f "templates/results.html" ]; then
                 return;
             }
             
-            if (!data.results || data.results.length === 0) {
+            // Handle both array and single result cases
+            const results = Array.isArray(data.results) ? data.results : [data.results];
+            
+            if (!results || results.length === 0) {
                 resultsDiv.innerHTML = `
                     <div class="blast-result-item" style="
                         color: #2e7d32;
@@ -496,17 +499,22 @@ if [ -f "templates/results.html" ]; then
             }
             
             let resultsHtml = '';
-            data.results.forEach(result => {
+            results.forEach(result => {
+                if (!result) return; // Skip null or undefined results
+                
                 resultsHtml += `
                     <div class="blast-result-item">
-                        <h5>${result.title}</h5>
-                        <p>Length: ${result.length} bp</p>
-                        <p>E-value: ${result.e_value}</p>
-                        <p>Score: ${result.score}</p>
-                        <p>Identities: ${result.identities}/${result.alignment_length} (${((result.identities/result.alignment_length)*100).toFixed(1)}%)</p>
-                        <p>Gaps: ${result.gaps}</p>
-                        <p>Query: ${result.query_start}-${result.query_end}</p>
-                        <p>Subject: ${result.sbjct_start}-${result.sbjct_end}</p>
+                        <h5>${result.title || 'Unknown Title'}</h5>
+                        <p>Length: ${result.length ? result.length + ' bp' : 'N/A'}</p>
+                        <p>E-value: ${result.e_value ? result.e_value.toExponential(2) : 'N/A'}</p>
+                        <p>Score: ${result.score ? result.score.toFixed(1) : 'N/A'}</p>
+                        <p>Identities: ${result.identities ? result.identities + '/' + result.alignment_length + ' (' + result.percent_identity.toFixed(1) + '%)' : 'N/A'}</p>
+                        <p>Gaps: ${result.gaps !== undefined ? result.gaps : 'N/A'}</p>
+                        <p>Query: ${result.query_start ? result.query_start + '-' + result.query_end : 'N/A'}</p>
+                        <p>Subject: ${result.sbjct_start ? result.sbjct_start + '-' + result.sbjct_end : 'N/A'}</p>
+                        ${result.alignment_direction ? `<p>Direction: ${result.alignment_direction}</p>` : ''}
+                        ${result.match_quality ? `<p>Quality: ${result.match_quality}</p>` : ''}
+                        ${result.significance ? `<p>Significance: ${result.significance}</p>` : ''}
                     </div>
                 `;
             });

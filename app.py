@@ -7,7 +7,7 @@ import os
 import re
 from Bio import SeqIO
 from tempfile import NamedTemporaryFile
-from Bio.Blast import NCBIWWW
+from Bio.Blast import NCBIWWW, NCBIXML
 from Bio.Seq import Seq
 import time
 
@@ -399,147 +399,94 @@ def generate_csv(results, sequence_id, include_probe=False):
         writer.writerow(row)
     
     return output.getvalue()
-
-def perform_blast_search(sequence, program="blastn", database="nt", hitlist_size=15, expect_value=1e-3):
+def perform_blast_search(sequence):
     try:
-        # Check sequence quality first
-        quality_check = check_sequence_quality(sequence)
+        print(f"\nStarting BLAST search for sequence: {sequence[:50]}...")
         
-        if quality_check['quality_issues']:
-            return {
-                "error": "Sequence quality issues found",
-                "quality_report": quality_check
+        # Check if sequence is a primer (18-30 nucleotides)
+        is_primer = 18 <= len(sequence) <= 30
+        print(f"Sequence length: {len(sequence)}, Is primer: {is_primer}")
+        
+        # Validate sequence
+        if not re.match(r'^[ATCG]+$', sequence):
+            print("Invalid sequence characters detected")
+            return {"error": "Invalid sequence characters. Only A, T, C, G are allowed."}
+        
+        # Set BLAST parameters based on sequence type
+        if is_primer:
+            print("Using primer-specific BLAST parameters")
+            blast_params = {
+                'program': 'blastn',
+                'database': 'nt',
+                'word_size': 7,  # Smaller word size for short sequences
+                'expect': 1e-5,  # Stricter E-value for primers
+                'hitlist_size': 50,
+                'gapcosts': '5 2'  # More permissive gap costs
+            }
+        else:
+            print("Using standard BLAST parameters")
+            blast_params = {
+                'program': 'blastn',
+                'database': 'nt',
+                'word_size': 11,
+                'expect': 1e-3,
+                'hitlist_size': 50
             }
         
-        # Use the cleaned sequence for BLAST
-        cleaned_sequence = quality_check['cleaned_sequence']
+        print(f"BLAST parameters: {blast_params}")
         
-        # Clean and validate sequence while preserving header
-        cleaned_sequence = cleaned_sequence.strip()
+        # Perform BLAST search
+        print("Submitting BLAST request to NCBI...")
+        result_handle = NCBIWWW.qblast(**blast_params, sequence=sequence)
+        print("BLAST request completed")
         
-        # Split into header and sequence
-        if cleaned_sequence.startswith('>'):
-            header, seq = cleaned_sequence.split('\n', 1)
-            seq = seq.replace('\n', '').strip().upper()
-        else:
-            header = ">Sequence"
-            seq = cleaned_sequence.replace('\n', '').strip().upper()
-        
-        # Detailed sequence validation
-        if not seq:
-            return {"error": "Empty sequence provided"}
-            
-        if not all(c in 'ATCGN' for c in seq):
-            invalid_chars = set(c for c in seq if c not in 'ATCGN')
-            return {"error": f"Invalid sequence characters found: {invalid_chars}. Only A, T, C, G, and N are allowed."}
-        
-        if len(seq) < 20:
-            return {"error": f"Sequence is too short ({len(seq)} nucleotides). Minimum length should be 20 nucleotides."}
-            
-        if len(seq) > 10000:
-            return {"error": f"Sequence is too long ({len(seq)} nucleotides). Maximum length is 10000 nucleotides."}
-            
-        # Check for low complexity regions
-        if seq.count('A')/len(seq) > 0.8 or seq.count('T')/len(seq) > 0.8 or \
-           seq.count('G')/len(seq) > 0.8 or seq.count('C')/len(seq) > 0.8:
-            return {"error": "Sequence appears to be low complexity (too many repeated bases)"}
-        
-        print(f"Performing BLAST search with sequence length: {len(seq)} and E-value threshold: {expect_value}")
-        
-        # Perform BLAST search with stricter parameters
-        result_handle = NCBIWWW.qblast(
-            program=program,
-            database=database,
-            sequence=seq,
-            hitlist_size=hitlist_size,
-            expect=expect_value,  # Stricter E-value
-            word_size=7,  # Decrease from 11 to 7 for more matches
-            gapcosts="5 2",
-            filter="L",
-            perc_ident=90  # Only show matches with 90% or higher identity
-        )
-        
-        # Parse the results
-        from Bio.Blast import NCBIXML
+        # Parse results
+        print("Parsing BLAST results...")
         blast_records = NCBIXML.parse(result_handle)
         
-        # Process results with stricter filtering
-        blast_results = []
-        total_matches = 0
-        filtered_matches = 0
-        
+        # Process results
+        results = []
         for blast_record in blast_records:
+            print(f"Processing alignment with {len(blast_record.alignments)} hits")
             for alignment in blast_record.alignments:
                 for hsp in alignment.hsps:
-                    total_matches += 1
                     # Calculate percent identity
                     percent_identity = (hsp.identities / hsp.align_length) * 100
                     
-                    # Only include highly significant matches
-                    if percent_identity >= 90 and hsp.expect <= 1e-5:
-                        filtered_matches += 1
-                        blast_results.append({
-                            'title': alignment.title,
-                            'length': alignment.length,
-                            'e_value': hsp.expect,
-                            'score': hsp.score,
-                            'identities': hsp.identities,
-                            'gaps': hsp.gaps,
-                            'query_start': hsp.query_start,
-                            'query_end': hsp.query_end,
-                            'sbjct_start': hsp.sbjct_start,
-                            'sbjct_end': hsp.sbjct_end,
-                            'alignment_length': hsp.align_length,
-                            'percent_identity': percent_identity,
-                            'query_header': header,
-                            'is_reverse_strand': hsp.sbjct_start > hsp.sbjct_end,
-                            'alignment_direction': 'Reverse' if hsp.sbjct_start > hsp.sbjct_end else 'Forward',
-                            'match_quality': 'High' if hsp.expect < 1e-10 else 'Medium',
-                            'significance': 'Very significant' if hsp.expect < 1e-10 else 'Significant'
-                        })
+                    # Apply filtering based on sequence type
+                    if is_primer:
+                        if percent_identity >= 90 and hsp.expect <= 1e-5:
+                            results.append({
+                                'title': alignment.title,
+                                'length': alignment.length,
+                                'e_value': hsp.expect,
+                                'score': hsp.score,
+                                'identities': f"{hsp.identities}/{hsp.align_length} ({percent_identity:.1f}%)",
+                                'gaps': hsp.gaps,
+                                'query': hsp.query,
+                                'subject': hsp.sbjct
+                            })
+                    else:
+                        if percent_identity >= 90 and hsp.expect <= 1e-3:
+                            results.append({
+                                'title': alignment.title,
+                                'length': alignment.length,
+                                'e_value': hsp.expect,
+                                'score': hsp.score,
+                                'identities': f"{hsp.identities}/{hsp.align_length} ({percent_identity:.1f}%)",
+                                'gaps': hsp.gaps,
+                                'query': hsp.query,
+                                'subject': hsp.sbjct
+                            })
         
-        # Sort results by normalized score in descending order and take top 5
-        blast_results.sort(key=lambda x: x['normalized_score'], reverse=True)
-        top_results = blast_results[:5]
+        print(f"Found {len(results)} significant matches")
+        return results
         
-        # Add relevance ranking
-        for i, result in enumerate(top_results, 1):
-            result['relevance_rank'] = i
-            result['relevance_description'] = {
-                1: "Most relevant match",
-                2: "Second most relevant match",
-                3: "Third most relevant match",
-                4: "Fourth most relevant match",
-                5: "Fifth most relevant match"
-            }[i]
-        
-        if not top_results:
-            return {
-                "message": "Excellent! No significant matches found in the database.",
-                "details": {
-                    "status": "success",
-                    "message_type": "positive",
-                    "implications": [
-                        "Your primer is highly specific",
-                        "Low risk of off-target amplification",
-                        "Reduced chance of cross-reactivity",
-                        "Primer appears to be unique to your target"
-                    ],
-                    "style": {
-                        "color": "green",
-                        "background": "#e8f5e9",
-                        "border": "1px solid #81c784",
-                        "padding": "15px",
-                        "border-radius": "5px"
-                    }
-                }
-            }, 200
-        
-        return top_results
     except Exception as e:
-        print(f"BLAST search error: {str(e)}")
-        return {"error": f"BLAST search failed: {str(e)}"}
-
+        print(f"Error in perform_blast_search: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e)}
 def check_primer_specificity(sequence, program="blastn", database="nt", hitlist_size=15):
     """Check PCR primer specificity using BLAST
     
@@ -649,12 +596,21 @@ def check_primer_specificity(sequence, program="blastn", database="nt", hitlist_
 @app.route('/')
 def index():
     # Get a sample sequence for demo purposes
-    sample_sequence = """>BRCA1_fragment
-ATGGATTTATCTGCTCTTCGCGTTGAAGAAGTACAAAATGTCATTAATGCTATGCAGAAAATCTTAGA
-GTGTCCCATCTGTCTGGAGTTGATCAAGGAACCTGTCTCCACAAAGTGTGACCACATATTTTGCAAAT
-TTTGCATGCTGAAACTTCTCAACCAGAAGAAAGGGCCTTCACAGTGTCCTTTATGTAAGAATGATAAA
-GGAAATACAGCTTGCTCACTTCGTTACTTCAGGCCCCTCAAATCTGTGGGAGCCACACCTGATGACAC
-"""
+    sample_sequence = """>NM_001204686.1 Aplysia californica insulin precursor (PIN), mRNA
+CCTGAATATAGCCAACTAAATTCTAGGAACTCTAAGAGGACTACGCTTGTCTCCAACATCTTATCGTCAA
+CATCTTCTGCAAGCGATAACTATATTTCTGGTCCGCCAAAGTAGTATACGCTAAGAACAAGAGGAAGAGA
+GTCGTAAGGTTTTTTATTCCCAGCCGGCGAGAGCAGAAACTGTTGTTCTAGCTGCCTTTCTGGTCTTAAC
+AGGACCATTTTGCTGGCCAGTGAAAAACTAACTCGGGTGAAACAACATTGGTGCTACCAGCCTCTCCTGA
+CTGTTCCAACGGTGCCTTCTCGTAGCCAGAATGAGCAAGTTCCTCCTCCAGAGCCACTCCGCCAACGCCT
+GCCTGCTCACCCTTCTGCTCACGCTGGCCTCCAACCTCGACATATCCCTGGCCAACTTCGAGCACTCGTG
+CAACGGCTACATGCGGCCCCACCCGCGGGGTCTGTGCGGCGAAGACCTGCACGTCATCATTTCCAACCTG
+TGCAGCTCTCTGGGGGGCAACAGGAGGTTCCTGGCCAAGTACATGGTCAAAAGAGACACGGAAAATGTGA
+ACGACAAGTTACGAGGGATCCTGCTCAATAAGAAAGAAGCTTTCTCCTACTTGACCAAGAGAGAGGCCTC
+AGGCTCCATCACATGCGAATGTTGCTTCAACCAGTGTCGGATATTTGAGCTGGCTCAGTACTGCCGTCTG
+CCAGACCATTTCTTCTCCAGAATATCCAGAACCGGAAGGAGCAACAGTGGACATGCGCAGTTGGAGGACA
+ACTTTAGTTAGACATGTTGAGGGCGTAAATGCTTTTAAAATTTTTAATTTGGTGATTATTATTATAAAGG
+AGGAGTCCACGTGGTGTCAGATTTAGCGGGTTTTTTCCACGTGTTTGACTAAAGTTTCCAGATTTATTTC
+ATACCAGCGATACCCGCAGGAATAGAAGGTCCCCTAAGAAGCTGAAGGCATTATTGAT"""
     return render_template('index.html', sample_sequence=sample_sequence)
 
 @app.route('/design', methods=['POST'])
@@ -958,11 +914,14 @@ def api_blast():
         data = request.get_json()
         sequence = data.get('sequence', '')
         
+        print(f"Received BLAST request for sequence: {sequence[:50]}...")
+        
         if not sequence:
             return {"error": "No sequence provided"}, 400
         
         # Check sequence quality
         quality_check = check_sequence_quality(sequence)
+        print(f"Sequence quality check: {quality_check}")
         
         if quality_check['quality_issues']:
             return {
@@ -976,7 +935,9 @@ def api_blast():
             }, 200
         
         # Perform BLAST search with cleaned sequence
+        print(f"Performing BLAST search with cleaned sequence: {quality_check['cleaned_sequence'][:50]}...")
         blast_results = perform_blast_search(quality_check['cleaned_sequence'])
+        print(f"BLAST results: {blast_results}")
         
         if isinstance(blast_results, dict) and "error" in blast_results:
             return {"error": blast_results["error"]}, 400
@@ -1006,6 +967,9 @@ def api_blast():
         return {"results": blast_results}, 200
         
     except Exception as e:
+        print(f"BLAST API error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return {"error": str(e)}, 500
 
 @app.route('/api/check_primer', methods=['POST'])

@@ -229,7 +229,7 @@
 {% block scripts %}
 <script>
     // Sample sequence variable
-    const sampleSequence = `{{ sample_sequence }}`;
+    const sampleSequence = String.raw`{{ sample_sequence|safe }}`;
     
     // Parameter presets
     const presets = {
